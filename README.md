@@ -94,3 +94,5 @@ exactly why Week 3 introduces a real database.
 - Run `git init`, then commit once per stage (`git add . && git commit -m "Stage N: ..."`).
 - Push to a public GitHub repo.
 - Paste one `curl -i` output and a Swagger screenshot into this README before submitting.
+
+  <img width="1918" height="932" alt="Screenshot 2026-07-18 194259" src="https://github.com/user-attachments/assets/b02a1ed7-2109-476d-b3f6-4f71594895e1" />
