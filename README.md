@@ -148,6 +148,8 @@ memory.
 
 ## Notes for your submission
 
+## Notes for your submission
+
 - Same public GitHub repo as Assignment 1 — this is a continuation, not a
   new project.
 - Commit per stage (`git add . && git commit -m "Stage N: ..."`).
@@ -155,3 +157,7 @@ memory.
   still gives you 3 seeded tasks automatically.
 - Add your DB Browser screenshot and the SQL query output to this README
   before submitting.
+
+Swagger UI screenshot (Assignment 1):
+
+<img width="1918" height="932" alt="Screenshot 2026-07-18 194259" src="https://github.com/user-attachments/assets/b02a1ed7-2109-476d-b3f6-4f71594895e1" />
