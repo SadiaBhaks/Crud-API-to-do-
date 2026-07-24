@@ -179,4 +179,5 @@ Swagger UI screenshot (Assignment 1):
 
 <img width="1918" height="932" alt="Screenshot 2026-07-18 194259" src="https://github.com/user-attachments/assets/b02a1ed7-2109-476d-b3f6-4f71594895e1" />
 
-<img width="1918" height="932" alt="Screenshot 2026-07-24 125259" src="https://github.com/user-attachments/assets/b02a1ed7-2109-476d-b3f6-4f71594895e1" />
+<img width="431" height="318" alt="Screenshot 2026-07-24 125259" src="https://github.com/user-attachments/assets/74978459-5269-4e59-83c8-5391083f1f37" />
+
