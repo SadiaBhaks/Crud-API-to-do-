@@ -1,52 +1,79 @@
 # Task API
 
-A to-do list API — full CRUD, now backed by a real **SQLite** database.
-Built for the FlyRank Internship Backend Track (Assignment 1 → Assignment 2).
+A to-do list API — full CRUD, now running against a real **PostgreSQL**
+database inside **Docker**. Built for the FlyRank Internship Backend Track
+(Assignment 1 → 2 → 3, the third storage swap in the same repo).
 
-Built with **Python 3 + FastAPI + sqlite3** (Python's built-in database
-library — nothing extra to install for the database itself).
+Built with **Python 3 + FastAPI + psycopg** (the standard raw Postgres
+driver), containerized with Docker Compose.
 
-## Why SQLite
+## The storage journey so far
 
-SQLite was chosen because it's a single file (`tasks.db`) with no separate
-server to install, configure, or run — you just open the file and it exists.
-That makes it perfect for a small project like this: zero setup, and the
-whole database can be copied, backed up, or inspected just like any other
-file. The tradeoff (which is fine here) is that SQLite isn't built for many
-simultaneous writers hammering it at once — that's when a project graduates
-to something like Postgres.
+| Assignment | Where tasks live | What runs it |
+|---|---|---|
+| A1 | a list in memory | your program |
+| A2 | a `tasks.db` file | your disk (SQLite) |
+| A3 (this one) | rows in Postgres | a container — a real database server |
 
-## Where the database lives
+The API on top never changed. That's the whole point of keeping every
+database call inside one file, `db.py` — swapping storage only ever means
+rewriting that file, never the routes.
 
-`tasks.db` sits next to `main.py`, and is created automatically the first
-time you run the app — the `tasks` table and its 3 seed rows are created
-only if they don't already exist, so restarting never duplicates them.
-
-`tasks.db` is **git-ignored** (see `.gitignore`) so every fresh clone starts
-from a clean, freshly-seeded database rather than shipping the maintainer's
-personal data.
-
-## How to run it
+## One command to run everything
 
 ```bash
+cp .env.example .env
+docker compose up
+```
+
+That's it — Docker builds the app image, starts Postgres, waits for
+Postgres to be healthy, then starts the API. On first run the `tasks`
+table is created and seeded with 3 example tasks automatically.
+
+Then open:
+- `http://localhost:8000/` — API description
+- `http://localhost:8000/health` — health check (now also pings the database)
+- `http://localhost:8000/docs` — **Swagger UI**
+
+Stop everything with `docker compose down` (your data survives, kept in
+the `taskdata` volume) — add `-v` (`docker compose down -v`) only if you
+want to wipe the database too.
+
+## Environment variables
+
+Copy `.env.example` to `.env` — that's the only setup step. `.env` is
+git-ignored, since a database password should never be committed;
+`.env.example` documents which key is needed:
+
+```
+DATABASE_URL=postgresql://postgres:dev@localhost:5432/tasks
+```
+
+Inside Docker Compose, the `api` service actually connects to the `db`
+service using the service name (`db`) instead of `localhost` — Compose
+sets that automatically in `compose.yaml`, so the `.env` value above is
+mainly for running the app directly on your machine against a
+separately-started Postgres container.
+
+## Running without Compose (optional, for local development)
+
+```bash
+docker run --name taskdb -e POSTGRES_PASSWORD=dev -e POSTGRES_DB=tasks \
+  -p 5432:5432 -v taskdata:/var/lib/postgresql/data -d postgres
+
 pip install -r requirements.txt
 uvicorn main:app --reload --port 8000
 ```
 
-Then open:
-- `http://localhost:8000/` — API description
-- `http://localhost:8000/health` — health check
-- `http://localhost:8000/docs` — **Swagger UI**
-
 ## Endpoints
 
-Identical to Assignment 1 — only the storage underneath changed, from a
-Python list to SQL queries against `tasks.db`.
+Identical to Assignments 1 and 2 — only `db.py` changed, from SQLite
+queries to Postgres queries.
 
 | CRUD | Method | Path | Description |
 |------|--------|------|-------------|
 | — | GET | `/` | API description |
-| — | GET | `/health` | Health check → `{"status": "ok"}` |
+| — | GET | `/health` | Health check, pings the database → `{"status": "ok", "db": "ok"}` |
 | Read | GET | `/tasks` | List all tasks (supports `?done=`, `?search=`, `?limit=`, `?offset=`) |
 | Read | GET | `/tasks/{id}` | Get one task, or `404` if it doesn't exist |
 | Create | POST | `/tasks` | Create a task from `{"title": "..."}`, `400` if title missing/empty |
@@ -58,39 +85,34 @@ Python list to SQL queries against `tasks.db`.
 Status codes: `200` reads, `201` create, `204` delete, `400` invalid body,
 `404` unknown id — every error returns `{"error": "..."}`.
 
-All queries use **parameterized placeholders** (`?`) — no user input is
-ever glued directly into a SQL string, which is what keeps the database
-safe from SQL injection.
+All queries use **parameterized placeholders** (`%s`, psycopg's style) —
+no user input is ever glued directly into a SQL string.
 
 ## Proof the API didn't change
 
-Every curl command and status code from the Assignment 1 README still
-works exactly the same against this version — same requests, same
-responses. That's the entire point of separating the API from its
-storage: the client can't tell whether tasks live in a Python list or a
-SQLite file. If any of these tests had needed to change, that would mean
-the storage swap had leaked into the API — which it didn't.
+The same curl commands from the A1 and A2 READMEs still work identically
+here — same requests, same responses, same status codes. Only `db.py`
+was rewritten; `main.py`'s routes are untouched. That's what "storage is
+just an implementation detail" means in practice: the client genuinely
+cannot tell whether tasks live in a Python list, a SQLite file, or a
+Postgres server.
 
 ## Testing with curl
 
 ```bash
-# Read
 curl -i http://localhost:8000/tasks
 curl -i http://localhost:8000/tasks/1
 curl -i http://localhost:8000/tasks/999                          # 404
 
-# Create
 curl -i -X POST http://localhost:8000/tasks \
   -H "Content-Type: application/json" -d '{"title":"Buy milk"}'  # 201
 
 curl -i -X POST http://localhost:8000/tasks \
   -H "Content-Type: application/json" -d '{}'                    # 400
 
-# Update
 curl -i -X PUT http://localhost:8000/tasks/1 \
   -H "Content-Type: application/json" -d '{"done": true}'        # 200
 
-# Delete
 curl -i -X DELETE http://localhost:8000/tasks/1                  # 204
 ```
 
@@ -101,63 +123,60 @@ $ curl -i http://localhost:8000/tasks/1
 HTTP/1.1 200 OK
 content-type: application/json
 
-{"id":1,"title":"Buy milk","done":true}
+{"id":1,"title":"Buy milk","done":false}
 ```
 
-### Proving persistence
+### Proving persistence across a full stack restart
 
 ```bash
 curl -X POST http://localhost:8000/tasks -H "Content-Type: application/json" -d '{"title":"Persisted task"}'
-# stop the server (Ctrl+C), then start it again:
-uvicorn main:app --reload --port 8000
+docker compose down
+docker compose up
 curl http://localhost:8000/tasks
-# "Persisted task" is still there — this never happened in Assignment 1.
+# "Persisted task" is still there — the named volume kept the Postgres data
+# even though both containers were fully removed and recreated.
 ```
 
-## Exploring the database with DB Browser for SQLite
+## Looking at the data directly
 
-1. Install [DB Browser for SQLite](https://sqlitebrowser.org/) (free).
-2. Open `tasks.db` from this project folder.
-3. Go to the **Browse Data** tab — you'll see the `tasks` table laid out
-   like a spreadsheet, the same rows your API serves.
-4. Go to **Execute SQL** and try, one at a time:
+```bash
+docker exec -it taskdb psql -U postgres -d tasks
+```
+(if you're using Compose instead of a hand-run container, find the container name with `docker ps` first — it'll be something like `crud-api-db-1`)
 
+Inside `psql`:
 ```sql
-SELECT * FROM tasks;                        -- list every task
-SELECT * FROM tasks WHERE done = 1;         -- only completed tasks
-SELECT COUNT(*) FROM tasks;                 -- how many tasks are there?
+\dt                          -- list tables
+SELECT * FROM tasks;
+SELECT * FROM tasks WHERE done = true;
+\q                            -- quit
 ```
 
-Example run: `SELECT * FROM tasks WHERE done = 1;` returned 2 rows —
-`Buy milk` and `Push to GitHub` — matching exactly what `GET
-/tasks?done=true` returns through the API. Any change made here (an
-`UPDATE` or `DELETE`) shows up immediately through `GET /tasks` with no
-server restart, because the API and DB Browser are reading the exact same
-file — there's no syncing, just one source of truth.
+*(Insert your psql/DB screenshot here.)*
 
-*(Insert your DB Browser screenshot here.)*
+Any change made here shows up immediately through `GET /tasks` — the API
+and `psql` are reading the exact same database, no syncing involved.
 
-## The mortality experiment — resolved
+## The mortality experiment, database edition
 
-In Assignment 1, restarting the server wiped every task. Now: create a
-task, restart the server, `GET /tasks` — it's still there. That's the
-whole upgrade this assignment makes: the API's promise (create/read/
-update/delete tasks) now survives past the life of the running process,
-because the data lives on disk in `tasks.db` instead of in a variable in
-memory.
+Run Postgres **without** a volume, create a few tasks, then `docker rm`
+the container and start a fresh one — the data is gone, because nothing
+outside the container kept it. The `taskdata` volume in `compose.yaml` is
+what prevents that: it lives outside the container's lifecycle, so
+`docker compose down` (without `-v`) and `up` again leaves your rows
+untouched.
 
 ## Notes for your submission
 
-## Notes for your submission
-
-- Same public GitHub repo as Assignment 1 — this is a continuation, not a
-  new project.
+- Same public GitHub repo as Assignments 1 and 2 — this is a continuation.
+- `.env` never appears in git history — only `.env.example` is committed.
 - Commit per stage (`git add . && git commit -m "Stage N: ..."`).
-- Push, then confirm a clean clone (or deleting `tasks.db` and restarting)
-  still gives you 3 seeded tasks automatically.
-- Add your DB Browser screenshot and the SQL query output to this README
-  before submitting.
+- Confirm a clean clone works: `cp .env.example .env && docker compose up`
+  should give a fully working API with no manual database setup.
+- Add your `psql`/DB screenshot to this README before submitting.
 
 Swagger UI screenshot (Assignment 1):
 
 <img width="1918" height="932" alt="Screenshot 2026-07-18 194259" src="https://github.com/user-attachments/assets/b02a1ed7-2109-476d-b3f6-4f71594895e1" />
+
+<img width="1918" height="932" alt="Screenshot 2026-07-24 125259" src="https://github.com/user-attachments/assets/b02a1ed7-2109-476d-b3f6-4f71594895e1" />
