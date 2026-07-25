@@ -1,148 +1,179 @@
 """
-Task API — now running against a real PostgreSQL database in Docker,
-instead of SQLite. Same endpoints, same request/response shapes as
-Assignment 1 and 2 — only the storage layer (db.py) changed again.
+Task API — Assignment 4: Auth.
 
-Run the whole stack with:
-    docker compose up
+Adds Supabase-backed authentication on top of the existing project:
+sign up, log in, log out, a public route, and protected routes guarded
+by a reusable bearer-token dependency that verifies the JWT with
+Supabase on every request.
 
-Or run the app locally against a Postgres container started separately
-(see README for both options).
+Run with:
+    uvicorn main:app --reload --port 8000
 
 Swagger UI: http://localhost:8000/docs
+  - Click "Authorize", paste an access_token from /auth/login, and
+    "Try it out" on any lock-icon route.
 """
 
 from typing import Optional
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Depends, HTTPException, Response
 from fastapi.responses import JSONResponse
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
-import db
+import auth
 
 app = FastAPI(
     title="Task API",
-    version="3.0",
-    description="A Postgres-backed to-do list API — full CRUD, built for FlyRank W1 A3.",
+    version="4.0",
+    description="A Supabase-authenticated API — signup/login/logout and protected routes, built for FlyRank W2 A4.",
 )
 
-
-@app.on_event("startup")
-def on_startup():
-    db.init_db()
-
-
-def error(status_code: int, message: str) -> JSONResponse:
-    return JSONResponse(status_code=status_code, content={"error": message})
-
-
-def row_to_task(row: dict) -> dict:
-    return {"id": row["id"], "title": row["title"], "done": bool(row["done"])}
+# auto_error=False so our own exception handler controls the exact 401
+# body/status, instead of FastAPI's default HTTPBearer behaviour.
+bearer_scheme = HTTPBearer(auto_error=False)
 
 
 # ---------------------------------------------------------------------------
-# Root & health (health now pings the database — a real production habit)
+# Every error in this API returns {"error": "..."} — a single exception
+# handler makes that true everywhere, including for our own 401s/403s
+# raised via HTTPException below.
+# ---------------------------------------------------------------------------
+
+@app.exception_handler(StarletteHTTPException)
+async def http_exception_handler(request, exc: StarletteHTTPException):
+    detail = exc.detail
+    message = detail if isinstance(detail, str) else str(detail)
+    return JSONResponse(status_code=exc.status_code, content={"error": message})
+
+
+# ---------------------------------------------------------------------------
+# The guard — a reusable dependency, applied to every protected route.
+# This is the ONE place token verification happens (Stage 4's golden rule).
+# ---------------------------------------------------------------------------
+
+async def get_current_user(
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(bearer_scheme),
+) -> dict:
+    if credentials is None or not credentials.credentials:
+        raise HTTPException(status_code=401, detail="Access token required")
+
+    result = auth.get_user(credentials.credentials)
+    if not result.ok:
+        raise HTTPException(status_code=401, detail="Invalid or expired token")
+
+    return result.data
+
+
+# ---------------------------------------------------------------------------
+# Root & public
 # ---------------------------------------------------------------------------
 
 @app.get("/")
 def root():
-    return {"name": "Task API", "version": "3.0", "endpoints": ["/tasks"]}
+    return {
+        "name": "Task API",
+        "version": "4.0",
+        "endpoints": [
+            "/auth/signup", "/auth/login", "/auth/logout",
+            "/public/info", "/protected/profile", "/protected/dashboard",
+        ],
+    }
 
 
 @app.get("/health")
 def health():
-    try:
-        db.ping()
-        return {"status": "ok", "db": "ok"}
-    except Exception:
-        return JSONResponse(status_code=503, content={"status": "error", "db": "unreachable"})
+    return {"status": "ok"}
+
+
+@app.get("/public/info")
+def public_info():
+    return {"message": "Welcome stranger! This info is public."}
 
 
 # ---------------------------------------------------------------------------
-# Read
+# Stage 1 — signup & login
 # ---------------------------------------------------------------------------
 
-@app.get("/tasks")
-def list_tasks(
-    done: Optional[bool] = None,
-    search: Optional[str] = None,
-    limit: Optional[int] = None,
-    offset: Optional[int] = 0,
-):
-    rows = db.list_tasks(done=done, search=search, limit=limit, offset=offset or 0)
-    return [row_to_task(r) for r in rows]
+@app.post("/auth/signup", status_code=201)
+def signup(payload: dict):
+    email = payload.get("email") if isinstance(payload, dict) else None
+    password = payload.get("password") if isinstance(payload, dict) else None
+
+    if not email or not password:
+        raise HTTPException(status_code=400, detail="email and password are required")
+
+    result = auth.sign_up(email, password)
+    if not result.ok:
+        raise HTTPException(status_code=400, detail=result.error or "Sign up failed")
+
+    return JSONResponse(status_code=201, content={"user": result.data})
 
 
-@app.get("/stats")
-def stats():
-    return db.stats()
+@app.post("/auth/login")
+def login(payload: dict):
+    email = payload.get("email") if isinstance(payload, dict) else None
+    password = payload.get("password") if isinstance(payload, dict) else None
+
+    if not email or not password:
+        raise HTTPException(status_code=400, detail="email and password are required")
+
+    result = auth.sign_in(email, password)
+    if not result.ok:
+        raise HTTPException(status_code=401, detail="Invalid login credentials")
+
+    return result.data
 
 
-@app.get("/tasks/{task_id}")
-def get_task(task_id: int):
-    row = db.get_task(task_id)
-    if row is None:
-        return error(404, "Task not found")
-    return row_to_task(row)
+@app.post("/auth/refresh")
+def refresh_token(payload: dict):
+    refresh_value = payload.get("refresh_token") if isinstance(payload, dict) else None
+    if not refresh_value:
+        raise HTTPException(status_code=400, detail="refresh_token is required")
 
+    result = auth.refresh(refresh_value)
+    if not result.ok:
+        raise HTTPException(status_code=401, detail=result.error or "Invalid refresh token")
 
-# ---------------------------------------------------------------------------
-# Create
-# ---------------------------------------------------------------------------
-
-@app.post("/tasks", status_code=201)
-def create_task(payload: dict):
-    title = payload.get("title") if isinstance(payload, dict) else None
-    if not title or not str(title).strip():
-        return error(400, "title is required and must not be empty")
-
-    row = db.create_task(str(title).strip())
-    return JSONResponse(status_code=201, content=row_to_task(row))
-
-
-# ---------------------------------------------------------------------------
-# Update & delete
-# ---------------------------------------------------------------------------
-
-@app.put("/tasks/{task_id}")
-def update_task(task_id: int, payload: dict):
-    existing = db.get_task(task_id)
-    if existing is None:
-        return error(404, "Task not found")
-
-    if not isinstance(payload, dict) or not payload:
-        return error(400, "request body must include title and/or done")
-
-    new_title = existing["title"]
-    new_done = existing["done"]
-
-    if "title" in payload:
-        if not payload["title"] or not str(payload["title"]).strip():
-            return error(400, "title must not be empty")
-        new_title = str(payload["title"]).strip()
-
-    if "done" in payload:
-        if not isinstance(payload["done"], bool):
-            return error(400, "done must be true or false")
-        new_done = payload["done"]
-
-    updated = db.update_task(task_id, new_title, new_done)
-    return row_to_task(updated)
-
-
-@app.delete("/tasks/{task_id}", status_code=204)
-def delete_task(task_id: int):
-    existing = db.get_task(task_id)
-    if existing is None:
-        return error(404, "Task not found")
-    db.delete_task(task_id)
-    return JSONResponse(status_code=204, content=None)
+    return result.data
 
 
 # ---------------------------------------------------------------------------
-# Reset — handy for demos
+# Stage 2 & 3 — protected routes, verified via the shared dependency
 # ---------------------------------------------------------------------------
 
-@app.post("/reset")
-def reset_tasks():
-    rows = db.reset()
-    return {"status": "reset", "tasks": [row_to_task(r) for r in rows]}
+@app.get("/protected/profile")
+def profile(user: dict = Depends(get_current_user)):
+    return {"user": user}
+
+
+@app.get("/protected/dashboard")
+def dashboard(user: dict = Depends(get_current_user)):
+    # A second protected route reusing the exact same dependency — no new
+    # auth code, which is the whole point of Stage 4.
+    return {"message": f"Welcome to your dashboard, {user['email']}."}
+
+
+# ---------------------------------------------------------------------------
+# Stretch — a real 403 case: authenticated, but not authorized.
+# 401 = "I don't know who you are." 403 = "I know you, and no."
+# ---------------------------------------------------------------------------
+
+ADMIN_EMAILS = {"admin@example.com"}
+
+
+@app.get("/protected/admin")
+def admin_only(user: dict = Depends(get_current_user)):
+    if user["email"] not in ADMIN_EMAILS:
+        raise HTTPException(status_code=403, detail="You do not have permission to access this resource")
+    return {"message": "Welcome, admin."}
+
+
+# ---------------------------------------------------------------------------
+# Stage 4 — logout (a protected route itself)
+# ---------------------------------------------------------------------------
+
+@app.post("/auth/logout", status_code=204)
+def logout(user: dict = Depends(get_current_user)):
+    auth.sign_out(None)
+    return Response(status_code=204)
