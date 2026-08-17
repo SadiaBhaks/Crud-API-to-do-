@@ -19,9 +19,12 @@ from typing import Optional
 from fastapi import FastAPI, Depends, HTTPException, Response
 from fastapi.responses import JSONResponse
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from pydantic import ValidationError
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 import auth
+import llm.client as llm_client
+from llm.schema import TriageInput
 
 app = FastAPI(
     title="Task API",
@@ -177,3 +180,32 @@ def admin_only(user: dict = Depends(get_current_user)):
 def logout(user: dict = Depends(get_current_user)):
     auth.sign_out(None)
     return Response(status_code=204)
+
+
+# ---------------------------------------------------------------------------
+# A17 — /triage: one messy task description in, one validated JSON out.
+# Validate -> build prompt -> call model (timeout + bounded retries) ->
+# parse + validate -> repair once on failure -> return clean JSON or 422.
+# ---------------------------------------------------------------------------
+
+@app.post("/triage")
+def triage_task(payload: dict):
+    # Validate the input before spending a single model call.
+    try:
+        parsed_input = TriageInput.model_validate(payload if isinstance(payload, dict) else {})
+    except ValidationError as exc:
+        first_error = exc.errors()[0]
+        field = ".".join(str(p) for p in first_error["loc"]) or "text"
+        raise HTTPException(status_code=400, detail=f"{field}: {first_error['msg']}")
+
+    try:
+        outcome = llm_client.triage(parsed_input.text)
+    except llm_client.LLMDisabledError:
+        raise HTTPException(status_code=503, detail="LLM feature is currently disabled")
+    except llm_client.ModelTimeoutError:
+        raise HTTPException(status_code=504, detail="The model took too long to respond")
+    except ValueError as exc:
+        # Validation failed twice (once + one repair retry) — quarantined already.
+        raise HTTPException(status_code=422, detail=str(exc))
+
+    return outcome.result.model_dump()

@@ -4,3 +4,4 @@ __pycache__/
 venv/
 tasks.db
 .env
+logs/*.jsonl

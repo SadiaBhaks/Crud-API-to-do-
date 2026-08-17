@@ -2,3 +2,6 @@ fastapi
 uvicorn
 supabase
 python-dotenv
+openai
+pydantic
+httpx
